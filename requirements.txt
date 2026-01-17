@@ -1,0 +1,8 @@
+flask==2.3.3
+opencv-python==4.8.1.78
+pytesseract==0.3.10
+Pillow==10.1.0
+numpy==1.24.3
+waitress==2.1.2
+pdf2image==1.16.3
+werkzeug==2.3.7

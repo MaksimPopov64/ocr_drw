@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Результат обработки документа</title>
+        <link rel="stylesheet"
+            href="{{ url_for('static', filename='css/style.css') }}">
+        <link rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1><i class="fas fa-clipboard-check"></i> Результат проверки
+                    документа</h1>
+                <p>Результаты автоматической обработки акта выполненных
+                    работ</p>
+            </div>
+
+            <div class="card">
+                {% if result.status == 'APPROVED' %}
+                <div class="status-badge status-approved">
+                    <i class="fas fa-check-circle"></i> ДОКУМЕНТ ПРИНЯТ
+                </div>
+                {% elif result.status == 'REJECTED' %}
+                <div class="status-badge status-rejected">
+                    <i class="fas fa-times-circle"></i> ДОКУМЕНТ ОТКЛОНЕН
+                </div>
+                {% else %}
+                <div class="status-badge status-review">
+                    <i class="fas fa-exclamation-triangle"></i> ТРЕБУЕТСЯ
+                    ПРОВЕРКА
+                </div>
+                {% endif %}
+
+                <div class="result-grid">
+                    <div class="result-card">
+                        <h4><i class="fas fa-info-circle"></i> Основная
+                            информация</h4>
+                        <ul>
+                            <li><strong>Номер заявки:</strong> {{
+                                result.parsed_data.claim_number or 'Не найден'
+                                }}</li>
+                            <li><strong>Модель оборудования:</strong> {{
+                                result.parsed_data.equipment_model or
+                                'Не найдена' }}</li>
+                            <li><strong>Картридж:</strong> {{
+                                result.parsed_data.cartridge_model or
+                                'Не найден' }}</li>
+                            <li><strong>Количество страниц:</strong> {{
+                                result.parsed_data.page_count or 'N/A' }}</li>
+                            <li><strong>Тип работ:</strong> {{
+                                result.parsed_data.work_type or 'N/A' }}</li>
+                        </ul>
+                    </div>
+
+                    <div class="result-card">
+                        <h4><i class="fas fa-check-double"></i> Проверка
+                            документа</h4>
+                        <ul>
+                            <li><strong>Подпись клиента:</strong>
+                                {% if result.parsed_data.signature_status ==
+                                'FOUND' %}
+                                <span style="color: green;"><i
+                                        class="fas fa-check"></i> Найдена</span>
+                                {% else %}
+                                <span style="color: red;"><i
+                                        class="fas fa-times"></i> Не
+                                    найдена</span>
+                                {% endif %}
+                            </li>
+                            <li><strong>Печать клиента:</strong>
+                                {% if result.parsed_data.stamp_status == 'FOUND'
+                                %}
+                                <span style="color: green;"><i
+                                        class="fas fa-check"></i> Найдена</span>
+                                {% else %}
+                                <span style="color: orange;"><i
+                                        class="fas fa-exclamation"></i> Не
+                                    найдена</span>
+                                {% endif %}
+                            </li>
+                            <li><strong>Дата обработки:</strong> {{
+                                result.timestamp[:19].replace('T', ' ') if
+                                result.timestamp else 'N/A' }}</li>
+                            <li><strong>Уверенность OCR:</strong>
+                                {% if result.ocr_stats and
+                                result.ocr_stats.confidence %}
+                                {{ "%.1f"|format(result.ocr_stats.confidence)
+                                }}%
+                                {% else %}
+                                N/A
+                                {% endif %}
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="result-card">
+                        <h4><i class="fas fa-clipboard-list"></i> Решение
+                            системы</h4>
+                        <p><strong>{{ result.check_result.decision.message
+                                }}</strong></p>
+                        <h5 style="margin-top: 15px;">Действия:</h5>
+                        <ul>
+                            {% for step in result.check_result.decision.steps %}
+                            <li>{{ step }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+
+                {% if result.check_result.issues %}
+                <div style="margin-top: 30px;">
+                    <h4><i class="fas fa-exclamation-triangle"></i> Найденные
+                        проблемы:</h4>
+                    {% for issue in result.check_result.issues %}
+                    <div
+                        class="issue-item {% if issue.severity == 'ERROR' %}issue-error{% else %}issue-warning{% endif %}">
+                        <strong>{{ issue.code }}:</strong> {{ issue.message }}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% if result.check_result.warnings %}
+                <div style="margin-top: 30px;">
+                    <h4><i class="fas fa-info-circle"></i> Предупреждения:</h4>
+                    {% for warning in result.check_result.warnings %}
+                    <div class="issue-item issue-warning">
+                        <strong>{{ warning.code }}:</strong> {{ warning.message
+                        }}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <div style="margin-top: 30px; text-align: center;">
+                    {% if file_id %}
+                    <a
+                        href="{{ url_for('get_annotated_image', file_id=file_id) }}"
+                        class="btn" target="_blank">
+                        <i class="fas fa-eye"></i> Посмотреть аннотированное
+                        изображение
+                    </a>
+
+                    <a href="{{ url_for('download_result', file_id=file_id) }}"
+                        class="btn" style="margin-left: 10px;">
+                        <i class="fas fa-download"></i> Скачать результат (JSON)
+                    </a>
+                    {% endif %}
+
+                    <a href="{{ url_for('index') }}" class="btn"
+                        style="margin-left: 10px; background: #6c757d;">
+                        <i class="fas fa-upload"></i> Загрузить новый документ
+                    </a>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4><i class="fas fa-file-alt"></i> Распознанный текст:</h4>
+                <div
+                    style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-top: 10px; max-height: 300px; overflow-y: auto;">
+                    <pre
+                        style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">{{ result.parsed_data.full_text or 'Текст не распознан' }}</pre>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>
