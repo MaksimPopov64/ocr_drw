@@ -5,33 +5,142 @@ import numpy as np
 from pytesseract import Output
 from datetime import datetime
 import os
-import sys
-
-
-if sys.platform == 'darwin':  # MacOS
-    # Попробуем найти tesseract через brew
-    possible_paths = [
-        '/opt/homebrew/bin/tesseract',  # Apple Silicon
-        '/usr/local/bin/tesseract',     # Intel Mac
-        '/opt/local/bin/tesseract'
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            import pytesseract
-            pytesseract.pytesseract.tesseract_cmd = path
-            print(f"Найден Tesseract по пути: {path}")
-            break
-    else:
-        print("Предупреждение: Tesseract не найден. Установите: brew install tesseract tesseract-lang")
+import easyocr
 
 class DocumentProcessor:
-    def __init__(self, tesseract_path=None):
+    def __init__(self):
+        # Инициализируем EasyOCR один раз (может занять несколько секунд)
+        # Указываем языки: русский и английский
+        print("Инициализация EasyOCR...")
+        self.reader = easyocr.Reader(['ru', 'en'], gpu=False)  # gpu=True если есть видеокарта
+        print("EasyOCR готов к работе.")
+    
+    def extract_text_easyocr(self, image_path):
+        """
+        Распознавание текста с помощью EasyOCR.
+        Возвращает полный текст и список детализированных результатов.
+        """
+        # Чтение изображения
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError(f"Не удалось загрузить изображение: {image_path}")
         
-        if tesseract_path:
-            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        # EasyOCR сам выполняет предобработку
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        self.ocr_config = r'--oem 3 --psm 6 -l rus+eng --psm 11 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя'
+        try:
+            # Распознавание текста
+            results = self.reader.readtext(
+                img_rgb, 
+                paragraph=False,  # Изменено на False для простоты
+                detail=1,
+                text_threshold=0.5
+            )
+            
+            # Отладочный вывод
+            print(f"EasyOCR results type: {type(results)}")
+            print(f"EasyOCR results length: {len(results)}")
+            if results and len(results) > 0:
+                print(f"First result type: {type(results[0])}")
+                print(f"First result: {results[0]}")
+            
+        except Exception as e:
+            print(f"Ошибка при вызове EasyOCR: {e}")
+            return "", []
+        
+        # Форматируем результаты
+        full_text = ""
+        text_details = []
+        
+        for item in results:
+            try:
+                # Обрабатываем разные форматы ответа EasyOCR
+                if len(item) == 3:
+                    # Стандартный формат: (bbox, text, confidence)
+                    bbox, text, confidence = item
+                elif len(item) == 2:
+                    # Упрощенный формат: (text, confidence) или (bbox, text)
+                    if isinstance(item[0], str):
+                        text, confidence = item
+                        bbox = None
+                    else:
+                        bbox, text = item
+                        confidence = 0.0
+                else:
+                    # Неизвестный формат, пропускаем
+                    print(f"Неизвестный формат элемента: {item}")
+                    continue
+                
+                # Извлекаем координаты bbox, если они есть
+                if bbox is not None:
+                    try:
+                        # bbox - это массив из 4 точек [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                        top_left = tuple(map(int, bbox[0]))
+                        bottom_right = tuple(map(int, bbox[2]))
+                    except:
+                        top_left = (0, 0)
+                        bottom_right = (0, 0)
+                else:
+                    top_left = (0, 0)
+                    bottom_right = (0, 0)
+                
+                # Добавляем текст
+                full_text += text + "\n"
+                text_details.append({
+                    'text': text,
+                    'confidence': float(confidence) if confidence else 0.0,
+                    'bbox': [top_left, bottom_right]
+                })
+                
+            except Exception as e:
+                print(f"Ошибка обработки элемента {item}: {e}")
+                continue
+        
+        return full_text.strip(), text_details
+    
+    def parse_document_easyocr(self, text, details):
+        """
+        Парсинг распознанного текста с учетом структуры документа.
+        """
+        result = {
+            'claim_number': None,
+            'equipment_model': None,
+            'cartridge_model': None,
+            'page_count': None,
+            'customer_name': None,
+            'nomenclature': None,
+            'quantity': 1
+        }
+        
+        # Ищем номер заявки по различным шаблонам
+        claim_patterns = [
+            r'заявки?[^\d\n№]*[№\s]*(\d{6,10})',
+            r'№\s*(\d{6,10})',
+            r'акт.*?(\d{6,10})',
+            r'(\d{6,10})'  # Просто ищем последовательность из 6-10 цифр
+        ]
+        
+        for pattern in claim_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result['claim_number'] = match.group(1)
+                break
+        
+        # Ищем модель оборудования (HP и т.д.)
+        if 'HP' in text.upper():
+            lines = text.split('\n')
+            for line in lines:
+                if 'HP' in line.upper():
+                    result['equipment_model'] = line.strip()
+                    break
+        
+        # Ищем модель картриджа
+        cartridge_match = re.search(r'CE\d+[A-Z]?', text)
+        if cartridge_match:
+            result['cartridge_model'] = cartridge_match.group(0)
+            result['nomenclature'] = f"Картридж {cartridge_match.group(0)}"
+        
+        return result
         
     def preprocess_image(self, image_path):
         """
@@ -496,44 +605,183 @@ class DocumentProcessor:
         
         return False
     
-    def process_document(self, image_path, expected_claim_number=None):
+    def detect_signature_advanced(self, image):
         """
-        Полная обработка документа
+        Улучшенный метод обнаружения подписи.
+        Комбинирует несколько подходов.
         """
-        # 1. Предобработка
-        original, img, processed = self.preprocess_image(image_path)
+        # 1. Ищем текст в нижней части документа
+        height, width = image.shape[:2]
+        bottom_region = image[int(height*0.7):height, 0:width]
         
-        # 2. Извлечение текста
-        text, ocr_data = self.extract_text_with_boxes(processed)
+        # Пробуем распознать текст в этой области
+        bottom_rgb = cv2.cvtColor(bottom_region, cv2.COLOR_BGR2RGB)
+        results = self.reader.readtext(bottom_rgb, detail=0)
+        bottom_text = ' '.join(results).lower()
         
-        # 3. Поиск подписи и печати
-        has_signature = self.find_signature_by_features(original)
-        has_stamp = self.find_stamp_area(processed) or self.find_stamp_by_color(original)
+        # Ключевые слова, указывающие на область подписи
+        signature_keywords = ['подпись', 'signature', 'исполнитель', 'заказчик', 'клиент']
+        has_signature_keyword = any(keyword in bottom_text for keyword in signature_keywords)
         
-        # 4. Парсинг данных
-        parsed_data = self.parse_document_text(text, ocr_data)
-        parsed_data['signature_status'] = 'FOUND' if has_signature else 'NOT_FOUND'
-        parsed_data['stamp_status'] = 'FOUND' if has_stamp else 'NOT_FOUND'
-        parsed_data['full_text'] = text
+        # 2. Анализ текстурных особенностей (подпись имеет уникальную текстуру)
+        gray = cv2.cvtColor(bottom_region, cv2.COLOR_BGR2GRAY)
         
-        # 5. Проверка требований
-        check_result = self.check_requirements(parsed_data, expected_claim_number)
+        # Вычисляем меру "рукописности" через анализ градиентов
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
         
-        # 6. Формирование результата
-        result = {
-            'timestamp': datetime.now().isoformat(),
-            'filename': os.path.basename(image_path),
-            'parsed_data': parsed_data,
-            'check_result': check_result,
-            'ocr_stats': {
-                'text_length': len(text),
-                'confidence': np.mean([float(x) for x in ocr_data['conf'] if x != '-1']),
-                'words_count': len(ocr_data['text'])
-            }
-        }
+        # Высокая вариация градиентов характерна для подписи
+        gradient_variance = np.var(gradient_magnitude)
+        has_high_variance = gradient_variance > 1000  # Эмпирический порог
         
-        # Добавляем общий статус
-        result['status'] = check_result['status']
+        # 3. Поиск характерных контуров
+        edges = cv2.Canny(gray, 50, 150)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        return result
+        signature_like_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if 500 < area < 5000:  # Подпись обычно среднего размера
+                perimeter = cv2.arcLength(contour, True)
+                if perimeter == 0:
+                    continue
+                    
+                # Коэффициент компактности (подпись менее компактна, чем печать)
+                compactness = 4 * np.pi * area / (perimeter * perimeter)
+                if compactness < 0.5:  # Не круглый объект
+                    signature_like_contours.append(contour)
+        
+        has_contours = len(signature_like_contours) > 0
+        
+        # Итоговое решение (можно комбинировать условия)
+        return has_signature_keyword or (has_high_variance and has_contours)
     
+    def detect_stamp_advanced(self, image):
+        """
+        Улучшенный метод обнаружения печати.
+        Ищет круглые объекты красного/синего цвета.
+        """
+        # 1. Цветовая сегментация
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # Диапазоны для красного цвета (печати часто красные)
+        lower_red1 = np.array([0, 70, 50])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 70, 50])
+        upper_red2 = np.array([180, 255, 255])
+        
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        # Диапазоны для синего цвета
+        lower_blue = np.array([100, 70, 50])
+        upper_blue = np.array([130, 255, 255])
+        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        
+        # Объединяем маски
+        color_mask = cv2.bitwise_or(red_mask, blue_mask)
+        
+        # Очистка маски
+        kernel = np.ones((5, 5), np.uint8)
+        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
+        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel)
+        
+        # 2. Поиск круглых контуров
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 300:  # Слишком маленький объект
+                continue
+            
+            # Проверка на округлость
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter == 0:
+                continue
+            
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            
+            # Круглые печати имеют circularity близкую к 1
+            if circularity > 0.6:
+                # Дополнительная проверка: печать обычно имеет текст по окружности
+                # Можно добавить проверку наличия текста внутри области
+                return True
+        
+        # 3. Если не нашли по цвету, ищем по форме (черно-белые печати)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Ищем круги с помощью преобразования Хафа
+        circles = cv2.HoughCircles(binary, cv2.HOUGH_GRADIENT, dp=1.2, 
+                                   minDist=100, param1=50, param2=30, 
+                                   minRadius=20, maxRadius=100)
+        
+        return circles is not None and len(circles[0]) > 0
+    
+    def process_document_improved(self, image_path, expected_claim_number=None):
+        """
+        Улучшенная обработка документа с EasyOCR.
+        """
+        try:
+            # 1. Распознаем текст с помощью EasyOCR
+            print(f"Начинаем обработку документа: {image_path}")
+            
+            # Пробуем оба метода на случай ошибок
+            try:
+                full_text, text_details = self.extract_text_easyocr(image_path)
+            except Exception as e:
+                print(f"Первый метод не сработал: {e}")
+                full_text, text_details = self.extract_text_easyocr_simple(image_path)
+            
+            print(f"Распознанный текст (первые 500 символов): {full_text[:500]}")
+            
+            # 2. Парсим данные
+            parsed_data = self.parse_document_easyocr(full_text, text_details)
+            parsed_data['full_text'] = full_text
+            
+            # 3. Ищем подпись и печать
+            img = cv2.imread(image_path)
+            
+            # Обнаружение подписи
+            try:
+                has_signature = self.detect_signature_advanced(img)
+                parsed_data['signature_status'] = 'FOUND' if has_signature else 'NOT_FOUND'
+            except Exception as e:
+                print(f"Ошибка детекции подписи: {e}")
+                parsed_data['signature_status'] = 'NOT_FOUND'
+            
+            # Обнаружение печати
+            try:
+                has_stamp = self.detect_stamp_advanced(img)
+                parsed_data['stamp_status'] = 'FOUND' if has_stamp else 'NOT_FOUND'
+            except Exception as e:
+                print(f"Ошибка детекции печати: {e}")
+                parsed_data['stamp_status'] = 'NOT_FOUND'
+            
+            # 4. Проверяем требования
+            check_result = self.check_requirements(parsed_data, expected_claim_number)
+            
+            # 5. Формируем результат
+            result = {
+                'timestamp': datetime.now().isoformat(),
+                'filename': os.path.basename(image_path),
+                'parsed_data': parsed_data,
+                'check_result': check_result,
+                'ocr_engine': 'EasyOCR',
+                'text_details': text_details[:5] if text_details else []
+            }
+            
+            result['status'] = check_result['status']
+            
+            return result
+            
+        except Exception as e:
+            print(f"Критическая ошибка в process_document_improved: {e}")
+            return {
+                'error': f'Ошибка обработки документа: {str(e)}',
+                'status': 'ERROR',
+                'timestamp': datetime.now().isoformat()
+            }
+        

@@ -1,8 +1,38 @@
-flask==2.3.3
+# Веб-фреймворк
+Flask==2.3.3
+Flask-CORS==4.0.0
+Flask-Limiter==3.5.0
+
+# Обработка изображений
 opencv-python==4.8.1.78
-pytesseract==0.3.10
 Pillow==10.1.0
-numpy==1.24.3
-waitress==2.1.2
+numpy==1.26.0
+scikit-image==0.22.0
+
+# Работа с PDF
+PyPDF2==3.0.1
 pdf2image==1.16.3
-werkzeug==2.3.7
+pytesseract==0.3.10
+
+# API клиенты
+requests==2.31.0
+aiohttp==3.9.1
+websockets==12.0
+
+# Утилиты
+python-multipart==0.0.6
+python-dotenv==1.0.0
+colorama==0.4.6
+tqdm==4.66.1
+
+# Производительность
+gunicorn==21.2.0
+gevent==23.9.1
+
+# Базы данных (опционально)
+psycopg2-binary==2.9.9
+redis==5.0.1
+SQLAlchemy==2.0.23
+
+# Мониторинг
+prometheus-client==0.19.0

@@ -1,0 +1,38 @@
+# Игнорируемые файлы
+.git/
+.gitignore
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Файлы IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Логи
+*.log
+logs/
+
+# Базы данных
+*.db
+*.sqlite3
+
+# Модели и данные
+models/
+downloads/
+
+# Временные файлы
+tmp/
+temp/
+uploads/*.jpg
+results/*.json

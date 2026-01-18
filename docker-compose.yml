@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Ollama service - needs to run separately
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ocr-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    networks:
+      - ocr-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  ocr-app:
+    build: .
+    container_name: ocr-system
+    depends_on:
+      - ollama
+    ports:
+      - "8080:80"           # Веб-интерфейс
+    volumes:
+      - ./uploads:/app/uploads           # Сохраняем загруженные файлы
+      - ./results:/app/results           # Сохраняем результаты
+      - ./models:/app/models             # Дополнительные модели
+    environment:
+      - OLLAMA_HOST=ollama:11434
+      - OLLAMA_URL=http://ollama:11434
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-change-this}
+      - OLLAMA_MODEL=mistral:7b-instruct-v0.2-q4_K_M
+    restart: unless-stopped
+    networks:
+      - ocr-network
+
+  # Опционально: PostgreSQL для хранения результатов
+  postgres:
+    image: postgres:15-alpine
+    container_name: ocr-postgres
+    environment:
+      - POSTGRES_DB=ocr_db
+      - POSTGRES_USER=ocr_user
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-ocr_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ocr-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocr_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Опционально: Redis для кеширования
+  redis:
+    image: redis:7-alpine
+    container_name: ocr-redis
+    networks:
+      - ocr-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ollama_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  ocr-network:
+    driver: bridge

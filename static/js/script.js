@@ -135,7 +135,7 @@ function processDocument() {
     }
     
     // Отправляем запрос
-    fetch('/upload', {
+    fetch('/upload_improved', {
         method: 'POST',
         body: formData
     })
@@ -247,4 +247,41 @@ function loadHistory() {
         .catch(error => {
             console.error('Ошибка при загрузке истории:', error);
         });
+}
+
+async function processWithMistral() {
+    if (!selectedFile) {
+        showMessage('Пожалуйста, выберите файл для обработки', 'error');
+        return;
+    }
+    
+    const expectedClaim = document.getElementById('expectedClaim').value;
+    
+    loading.style.display = 'block';
+    resultContainer.innerHTML = '';
+    
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    if (expectedClaim) {
+        formData.append('expected_claim', expectedClaim);
+    }
+    
+    try {
+        const response = await fetch('/upload_mistral', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            window.location.href = `/result/${data.file_id}`;
+        } else {
+            showMessage(data.error || 'Произошла ошибка при обработке', 'error');
+        }
+    } catch (error) {
+        showMessage('Ошибка сети: ' + error.message, 'error');
+    } finally {
+        loading.style.display = 'none';
+    }
 }
