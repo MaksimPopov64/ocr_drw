@@ -122,16 +122,8 @@
 
             <div style="margin-top: 30px; text-align: center;">
                 {% if file_id %}
-                <a href="{{ url_for('get_annotated_image', file_id=file_id) }}" class="btn" target="_blank">
-                    <i class="fas fa-eye"></i> Посмотреть аннотированное изображение
-                </a>
-                
-                <a href="{{ url_for('download_result', file_id=file_id) }}" class="btn" style="margin-left: 10px;">
+                <a href="{{ url_for('download_result', file_id=file_id) }}" class="btn">
                     <i class="fas fa-download"></i> Скачать результат (JSON)
-                </a>
-                
-                <a href="{{ url_for('debug_result', file_id=file_id) }}" class="btn" style="margin-left: 10px; background: #ffc107; color: #000;">
-                    <i class="fas fa-bug"></i> Отладка
                 </a>
                 {% endif %}
                 

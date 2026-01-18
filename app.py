@@ -72,6 +72,7 @@ def index():
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
+@app.route('/upload_mistral', methods=['POST'])
 @limiter.limit("10 per minute")
 def upload_file():
     if 'file' not in request.files:
@@ -215,6 +216,50 @@ def get_models():
             return jsonify({'error': 'Failed to get models'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/history')
+def get_history():
+    """Получить историю обработанных документов"""
+    try:
+        history = []
+        result_folder = app.config['RESULT_FOLDER']
+        
+        if os.path.exists(result_folder):
+            # Читаем все файлы результатов
+            for filename in sorted(os.listdir(result_folder), reverse=True):
+                if filename.endswith('.json'):
+                    file_id = filename.replace('.json', '')
+                    filepath = os.path.join(result_folder, filename)
+                    
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        
+                        # Извлекаем нужные данные
+                        parsed = data.get('parsed_data', {})
+                        check = data.get('check_result', {})
+                        
+                        history_item = {
+                            'file_id': file_id,
+                            'timestamp': data.get('timestamp'),
+                            'claim_number': parsed.get('claim_number'),
+                            'status': check.get('status', 'UNKNOWN'),
+                            'filename': data.get('filename')
+                        }
+                        history.append(history_item)
+                    except Exception as e:
+                        logger.warning(f"Error reading result file {filename}: {e}")
+                        continue
+        
+        return jsonify({'history': history})
+    except Exception as e:
+        logger.error(f"Error loading history: {e}")
+        return jsonify({'error': str(e), 'history': []}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    """Favicon endpoint"""
+    return '', 204
 
 @app.errorhandler(404)
 def not_found(error):

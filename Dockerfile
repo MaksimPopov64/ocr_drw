@@ -28,6 +28,8 @@ RUN apt-get update && \
     curl \
     supervisor \
     nginx \
+    tesseract-ocr \
+    libtesseract-dev \
     libgl1 \
     libglib2.0-0t64 \
     libsm6 \

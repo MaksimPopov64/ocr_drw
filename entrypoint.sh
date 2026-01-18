@@ -30,13 +30,43 @@ done
 
 if curl -s "$OLLAMA_URL/api/tags" > /dev/null 2>&1; then
     echo "✅ Ollama запущена и доступна!"
+    
+    # Проверяем наличие нужных моделей и загружаем их в фоне, если требуется
+    echo "📦 Проверка моделей..."
+    
+    # Функция для загрузки модели в фоне (не блокирует запуск)
+    load_model_async() {
+        local model=$1
+        local model_name=$2
+        (
+            echo "📥 Загружаем модель $model в фоне..."
+            curl -X POST "$OLLAMA_URL/api/pull" -d "{\"name\":\"$model\"}" -H "Content-Type: application/json" > /dev/null 2>&1 && \
+            echo "✅ Модель $model загружена" || \
+            echo "⚠️  Не удалось загрузить $model - используется резервное решение"
+        ) &
+    }
+    
+    # Проверяем llava (для OCR)
+    if ! curl -s "$OLLAMA_URL/api/tags" | grep -q "llava"; then
+        load_model_async "llava:7b" "llava"
+    else
+        echo "✅ Модель llava уже загружена"
+    fi
+    
+    # Проверяем mistral (для анализа)
+    if ! curl -s "$OLLAMA_URL/api/tags" | grep -q "mistral"; then
+        load_model_async "mistral:7b" "mistral"
+    else
+        echo "✅ Модель mistral уже загружена"
+    fi
 fi
 
 # Инициализируем базу данных (если используется)
-if [ -f /app/init_db.py ]; then
-    echo "🗄️  Инициализация базы данных..."
-    python /app/init_db.py || echo "⚠️  Инициализация БД не требуется"
-fi
+# Note: init_db.py is actually the Flask app, not a DB init script
+# if [ -f /app/init_db.py ]; then
+#     echo "🗄️  Инициализация базы данных..."
+#     python /app/init_db.py || echo "⚠️  Инициализация БД не требуется"
+# fi
 
 # Запускаем миграции (если есть)
 if [ -f /app/manage.py ]; then

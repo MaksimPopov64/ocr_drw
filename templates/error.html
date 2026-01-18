@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ошибка</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .error-container {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .error-container h1 {
+            color: #d32f2f;
+            font-size: 3em;
+            margin-bottom: 20px;
+        }
+        .error-container p {
+            font-size: 1.2em;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .error-container .btn {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="error-container">
+            <h1>Ошибка</h1>
+            <p>{{ message }}</p>
+            <a href="/" class="btn">Вернуться на главную</a>
+        </div>
+    </div>
+</body>
+</html>

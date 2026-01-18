@@ -89,7 +89,8 @@ class MistralOCRProcessor:
     
     def extract_text_with_mistral(self, image_path: str) -> str:
         """
-        Извлечение текста с изображения с помощью Mistral
+        Извлечение текста с изображения с помощью llava (vision model)
+        Если модель не доступна, использует Tesseract как fallback
         """
         try:
             # Кодируем изображение в base64
@@ -97,13 +98,17 @@ class MistralOCRProcessor:
             
             # Подготавливаем промпт для OCR
             prompt = """Ты - система оптического распознавания текста (OCR). 
-            Извлеки весь текст с изображения документа максимально точно.
-            Сохрани структуру текста, включая таблицы если они есть.
-            Верни только распознанный текст, без комментариев."""
+Проанализируй это изображение документа и извлеки весь видимый текст максимально точно.
+Сохрани структуру текста, включая макеты таблиц если они есть.
+Верни только распознанный текст и цифры, без комментариев.
+Если видишь подпись или штамп, отмечай это как [SIGNATURE] или [STAMP]."""
+            
+            # Используем vision-capable модель (llava) для обработки изображений
+            vision_model = "llava:7b"
             
             # Формируем запрос к Ollama API
             payload = {
-                "model": self.model,
+                "model": vision_model,
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
@@ -114,23 +119,39 @@ class MistralOCRProcessor:
             }
             
             # Отправляем запрос
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json=payload,
-                timeout=300  # Увеличиваем таймаут для больших документов
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "")
-            else:
-                print(f"Ошибка API Ollama: {response.status_code}")
-                print(f"Ответ: {response.text}")
-                return ""
+            try:
+                response = requests.post(
+                    f"{self.ollama_url}/api/generate",
+                    json=payload,
+                    timeout=300  # Увеличиваем таймаут для больших документов
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    text = result.get("response", "").strip()
+                    if text:
+                        return text
+                    else:
+                        print(f"⚠️ Ollama вернул пустой ответ, используем Tesseract")
+                        return self.extract_text_with_tesseract(image_path)
+                else:
+                    print(f"⚠️ Ошибка Ollama {response.status_code}: {response.text[:200]}")
+                    return self.extract_text_with_tesseract(image_path)
+                    
+            except requests.exceptions.Timeout:
+                print(f"⚠️ Timeout при запросе к Ollama, используем Tesseract")
+                return self.extract_text_with_tesseract(image_path)
+            except requests.exceptions.ConnectionError:
+                print(f"⚠️ Ollama не доступна, используем Tesseract")
+                return self.extract_text_with_tesseract(image_path)
                 
         except Exception as e:
-            print(f"Ошибка при извлечении текста: {e}")
-            return ""
+            print(f"❌ Ошибка при извлечении текста: {e}")
+            # Fallback на Tesseract
+            try:
+                return self.extract_text_with_tesseract(image_path)
+            except:
+                return ""
     
     def analyze_document_structure(self, text: str) -> Dict[str, Any]:
         """
@@ -219,7 +240,7 @@ class MistralOCRProcessor:
         try:
             img = cv2.imread(image_path)
             if img is None:
-                return {"signature": False, "stamp": False}
+                return {"has_signature": False, "has_stamp": False}
             
             height, width = img.shape[:2]
             
@@ -232,26 +253,32 @@ class MistralOCRProcessor:
             image_base64 = self.encode_image_to_base64(temp_path)
             
             # Промпт для анализа подписи и печати
-            prompt = """Проанализируй изображение. Это нижняя часть документа.
-            Определи: 
-            1. Есть ли на изображении подпись (рукописная)?
-            2. Есть ли на изображении печать/штамп (обычно круглая)?
-            
-            Верни ответ в формате JSON:
-            {
-                "has_signature": true/false,
-                "has_stamp": true/false
-            }"""
+            prompt = """Проанализируй это изображение - это нижняя часть офисного документа.
+Определи наличие:
+1. Рукописной подписи (любые рукописные буквы/линии)
+2. Печати или штампа (обычно красного или синего цвета, может быть круглая или квадратная)
+
+Верни ТОЛЬКО JSON:
+{
+    "has_signature": true/false,
+    "has_stamp": true/false,
+    "signature_desc": "описание подписи если найдена",
+    "stamp_desc": "описание штампа если найден"
+}"""
             
             payload = {
-                "model": self.vision_model if self.check_model_exists(self.vision_model) else self.model,
+                "model": "llava:7b",
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
                 "options": {"temperature": 0.1}
             }
             
-            response = requests.post(f"{self.ollama_url}/api/generate", json=payload)
+            response = requests.post(
+                f"{self.ollama_url}/api/generate", 
+                json=payload,
+                timeout=60
+            )
             
             if response.status_code == 200:
                 result = response.json()
@@ -261,11 +288,16 @@ class MistralOCRProcessor:
                 try:
                     json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                     if json_match:
-                        return json.loads(json_match.group(0))
-                except:
-                    pass
+                        parsed = json.loads(json_match.group(0))
+                        return {
+                            "has_signature": parsed.get("has_signature", False),
+                            "has_stamp": parsed.get("has_stamp", False)
+                        }
+                except Exception as parse_error:
+                    print(f"Не удалось распарсить ответ модели: {parse_error}")
             
             # Если модель не сработала, используем компьютерное зрение
+            print("⚠️ Fallback на компьютерное зрение для детекции подписи/печати")
             return self.cv_detect_signature_stamp(img)
             
         except Exception as e:

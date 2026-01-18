@@ -12,6 +12,39 @@ const historyBody = document.getElementById('historyBody');
 
 let selectedFile = null;
 
+// Показать сообщение пользователю
+function showMessage(message, type = 'info') {
+    const messageDiv = document.createElement('div');
+    messageDiv.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 15px 20px;
+        border-radius: 4px;
+        font-size: 14px;
+        z-index: 10000;
+        animation: slideIn 0.3s ease-out;
+    `;
+    
+    if (type === 'error') {
+        messageDiv.style.backgroundColor = '#f44336';
+        messageDiv.style.color = 'white';
+    } else if (type === 'success') {
+        messageDiv.style.backgroundColor = '#4caf50';
+        messageDiv.style.color = 'white';
+    } else {
+        messageDiv.style.backgroundColor = '#2196f3';
+        messageDiv.style.color = 'white';
+    }
+    
+    messageDiv.textContent = message;
+    document.body.appendChild(messageDiv);
+    
+    setTimeout(() => {
+        messageDiv.remove();
+    }, 3000);
+}
+
 // Загружаем историю при загрузке страницы
 document.addEventListener('DOMContentLoaded', loadHistory);
 
