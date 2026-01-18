@@ -25,7 +25,7 @@ function showMessage(message, type = 'info') {
         z-index: 10000;
         animation: slideIn 0.3s ease-out;
     `;
-    
+
     if (type === 'error') {
         messageDiv.style.backgroundColor = '#f44336';
         messageDiv.style.color = 'white';
@@ -36,10 +36,10 @@ function showMessage(message, type = 'info') {
         messageDiv.style.backgroundColor = '#2196f3';
         messageDiv.style.color = 'white';
     }
-    
+
     messageDiv.textContent = message;
     document.body.appendChild(messageDiv);
-    
+
     setTimeout(() => {
         messageDiv.remove();
     }, 3000);
@@ -83,21 +83,21 @@ dropArea.addEventListener('drop', handleDrop, false);
 function handleDrop(e) {
     const dt = e.dataTransfer;
     const files = dt.files;
-    
+
     if (files.length > 0) {
         handleFile(files[0]);
     }
 }
 
 // Обработка выбора файла через кнопку
-fileInput.addEventListener('change', function(e) {
+fileInput.addEventListener('change', function (e) {
     if (this.files.length > 0) {
         handleFile(this.files[0]);
     }
 });
 
 // Обработка пакетной загрузки
-batchInput.addEventListener('change', function(e) {
+batchInput.addEventListener('change', function (e) {
     if (this.files.length > 0) {
         handleBatchUpload(this.files);
     }
@@ -105,47 +105,47 @@ batchInput.addEventListener('change', function(e) {
 
 function handleFile(file) {
     selectedFile = file;
-    
+
     // Показываем информацию о файле
     fileInfo.style.display = 'block';
     fileName.innerHTML = `
         <i class="fas fa-file"></i> ${file.name} 
         (${formatFileSize(file.size)})
     `;
-    
+
     // Активируем кнопку обработки
     processBtn.disabled = false;
 }
 
 function handleBatchUpload(files) {
     if (files.length === 0) return;
-    
+
     const formData = new FormData();
     for (let i = 0; i < files.length; i++) {
         formData.append('files[]', files[i]);
     }
-    
+
     loading.style.display = 'block';
     resultContainer.innerHTML = '';
-    
+
     fetch('/batch', {
         method: 'POST',
         body: formData
     })
-    .then(response => response.json())
-    .then(data => {
-        loading.style.display = 'none';
-        
-        if (data.success) {
-            showBatchResults(data.results);
-        } else {
-            showError(data.error || 'Ошибка при пакетной обработке');
-        }
-    })
-    .catch(error => {
-        loading.style.display = 'none';
-        showError('Ошибка сети: ' + error.message);
-    });
+        .then(response => response.json())
+        .then(data => {
+            loading.style.display = 'none';
+
+            if (data.success) {
+                showBatchResults(data.results);
+            } else {
+                showError(data.error || 'Ошибка при пакетной обработке');
+            }
+        })
+        .catch(error => {
+            loading.style.display = 'none';
+            showError('Ошибка сети: ' + error.message);
+        });
 }
 
 function processDocument() {
@@ -153,40 +153,40 @@ function processDocument() {
         alert('Пожалуйста, выберите файл для обработки');
         return;
     }
-    
+
     const expectedClaim = document.getElementById('expectedClaim').value;
-    
+
     // Показываем индикатор загрузки
     loading.style.display = 'block';
     resultContainer.innerHTML = '';
-    
+
     // Создаем FormData
     const formData = new FormData();
     formData.append('file', selectedFile);
     if (expectedClaim) {
         formData.append('expected_claim', expectedClaim);
     }
-    
+
     // Отправляем запрос
     fetch('/upload_improved', {
         method: 'POST',
         body: formData
     })
-    .then(response => response.json())
-    .then(data => {
-        loading.style.display = 'none';
-        
-        if (data.success) {
-            // Перенаправляем на страницу результата
-            window.location.href = `/result/${data.file_id}`;
-        } else {
-            showError(data.error || 'Произошла ошибка при обработке');
-        }
-    })
-    .catch(error => {
-        loading.style.display = 'none';
-        showError('Ошибка сети: ' + error.message);
-    });
+        .then(response => response.json())
+        .then(data => {
+            loading.style.display = 'none';
+
+            if (data.success) {
+                // Перенаправляем на страницу результата
+                window.location.href = `/result/${data.file_id}`;
+            } else {
+                showError(data.error || 'Произошла ошибка при обработке');
+            }
+        })
+        .catch(error => {
+            loading.style.display = 'none';
+            showError('Ошибка сети: ' + error.message);
+        });
 }
 
 function showError(message) {
@@ -205,7 +205,7 @@ function showError(message) {
 
 function showBatchResults(results) {
     let html = '<div class="card"><h3>Результаты пакетной обработки</h3>';
-    
+
     results.forEach(result => {
         let statusBadge;
         if (result.status === 'APPROVED') {
@@ -215,7 +215,7 @@ function showBatchResults(results) {
         } else {
             statusBadge = '<span class="status-badge status-review" style="font-size: 12px;">ПРОВЕРКА</span>';
         }
-        
+
         html += `
             <div style="border-bottom: 1px solid #eee; padding: 10px 0;">
                 <strong>${result.original_filename}</strong>
@@ -226,10 +226,10 @@ function showBatchResults(results) {
             </div>
         `;
     });
-    
+
     html += '</div>';
     resultContainer.innerHTML = html;
-    
+
     // Обновляем историю
     loadHistory();
 }
@@ -248,7 +248,7 @@ function loadHistory() {
         .then(data => {
             if (data.history && data.history.length > 0) {
                 historyCard.style.display = 'block';
-                
+
                 let html = '';
                 data.history.slice(0, 10).forEach(item => {
                     let statusBadge;
@@ -259,7 +259,7 @@ function loadHistory() {
                     } else {
                         statusBadge = '<span class="status-badge status-review" style="font-size: 11px; padding: 4px 8px;">ПРОВЕРКА</span>';
                     }
-                    
+
                     html += `
                         <tr>
                             <td>${item.timestamp ? new Date(item.timestamp).toLocaleString('ru-RU') : 'N/A'}</td>
@@ -273,7 +273,7 @@ function loadHistory() {
                         </tr>
                     `;
                 });
-                
+
                 historyBody.innerHTML = html;
             }
         })
@@ -282,31 +282,31 @@ function loadHistory() {
         });
 }
 
-async function processWithMistral() {
+async function processWithAI() {
     if (!selectedFile) {
         showMessage('Пожалуйста, выберите файл для обработки', 'error');
         return;
     }
-    
+
     const expectedClaim = document.getElementById('expectedClaim').value;
-    
+
     loading.style.display = 'block';
     resultContainer.innerHTML = '';
-    
+
     const formData = new FormData();
     formData.append('file', selectedFile);
     if (expectedClaim) {
         formData.append('expected_claim', expectedClaim);
     }
-    
+
     try {
-        const response = await fetch('/upload_mistral', {
+        const response = await fetch('/upload', {
             method: 'POST',
             body: formData
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
             window.location.href = `/result/${data.file_id}`;
         } else {

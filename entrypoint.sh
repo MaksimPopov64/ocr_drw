@@ -46,23 +46,15 @@ if curl -s "$OLLAMA_URL/api/tags" > /dev/null 2>&1; then
         ) &
     }
     
-    # Проверяем llava (для OCR)
-    if ! curl -s "$OLLAMA_URL/api/tags" | grep -q "llava"; then
-        load_model_async "llava:7b" "llava"
+    # Проверяем qwen2.5-vl
+    if ! curl -s "$OLLAMA_URL/api/tags" | grep -q "qwen2.5-vl"; then
+        load_model_async "qwen2.5-vl:7b" "qwen2.5-vl"
     else
-        echo "✅ Модель llava уже загружена"
-    fi
-    
-    # Проверяем mistral (для анализа)
-    if ! curl -s "$OLLAMA_URL/api/tags" | grep -q "mistral"; then
-        load_model_async "mistral:7b" "mistral"
-    else
-        echo "✅ Модель mistral уже загружена"
+        echo "✅ Модель qwen2.5-vl уже загружена"
     fi
 fi
 
-# Инициализируем базу данных (если используется)
-# Note: init_db.py is actually the Flask app, not a DB init script
+# Инициализация базы данных (если используется)
 # if [ -f /app/init_db.py ]; then
 #     echo "🗄️  Инициализация базы данных..."
 #     python /app/init_db.py || echo "⚠️  Инициализация БД не требуется"
