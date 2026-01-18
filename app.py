@@ -9,7 +9,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
-from mistral_processor import MistralOCRProcessor
+from qwen_processor import QwenOCRProcessor as OCRProcessor
 import uuid
 
 # Настройка логирования
@@ -44,11 +44,11 @@ for folder in [app.config['UPLOAD_FOLDER'], app.config['RESULT_FOLDER']]:
 
 # Инициализируем процессор
 try:
-    processor = MistralOCRProcessor(
+    processor = OCRProcessor(
         ollama_url=app.config['OLLAMA_URL'],
-        model=os.environ.get('OLLAMA_MODEL', 'mistral:7b-instruct-v0.2-q4_K_M')
+        model=os.environ.get('OLLAMA_MODEL', 'qwen2.5-vl:7b')
     )
-    logger.info("✅ Mistral OCR Processor инициализирован")
+    logger.info("✅ Qwen2.5-VL OCR Processor initialized")
 except Exception as e:
     logger.error(f"❌ Ошибка инициализации процессора: {e}")
     processor = None

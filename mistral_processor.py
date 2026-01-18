@@ -72,14 +72,16 @@ class EnhancedMistralOCRProcessor:
         # Паттерны для извлечения ключевой информации
         self.extraction_patterns = {
             "claim_number": [
-                r"заявк[еи]\s*№?\s*(\d+)",
-                r"№\s*(\d{6,})",
-                r"Номер заявки[:\s]+(\d+)"
+                r"заявк\w*\s*(?:№|N|No|#)?\s*(\d{5,})",
+                r"(?:№|N|No|#)\s*(\d{6,})",
+                r"Номер заявки[:\s]+(\d+)",
+                r"АКТ.*?(\d{6,})"
             ],
             "equipment_model": [
                 r"(HP|Canon|Xerox|Brother|Samsung|Kyocera)[\s\w]+\d+",
                 r"модель[:\s]+([\w\s\d]+)",
-                r"принтер[:\s]+([\w\s\d]+)"
+                r"принтер[:\s]+([\w\s\d]+)",
+                r"аппарат[:\s]+([\w\s\d]+)"
             ],
             "cartridge_model": [
                 r"(CE\d{3}[A-Z])",
@@ -402,25 +404,39 @@ class EnhancedMistralOCRProcessor:
             image_base64 = self.encode_image_to_base64(image_path)
             
             # Специализированный промпт для русских документов
-            prompt = """You are an advanced OCR system specialized in Russian business documents.
-            
-TASK: Extract ALL visible text from this service act document (АКТ выполненных работ).
+            prompt = """You are an expert OCR system for Russian service documents.
+Analyze the image and extract the data into a structured format.
 
-IMPORTANT:
-1. This is a Russian document - prioritize Cyrillic text
-2. Common fields include:
-   - АКТ по заявке № (Act by request №)
-   - Исполнитель (Contractor)
-   - Заказчик (Customer)
-   - Модель оборудования (Equipment model)
-   - Выполненные работы (Completed work)
-   
-3. If you see garbled text, try to reconstruct the intended Russian words
-4. Preserve document structure and formatting
-5. Mark signatures as [ПОДПИСЬ/SIGNATURE]
-6. Mark stamps as [ПЕЧАТЬ/STAMP]
+Focus on:
+1. Service Act Number (АКТ по заявке №)
+2. Equipment Model (Модель аппарата)
+3. Serial Number (Серийный №)
+4. Counter readings (Счетчик страниц: Ч/Б and Цветных)
+5. COMPLETED WORKS (Выполненные работы) - extract as a list of items with descriptions and quantities if available.
+6. Checkboxes - indicate which specific works were checked (Осмотр, Инсталляция, ТО1, ТО2, ТО3, Ремонт, Доставка).
 
-Extract text maintaining the original layout:"""
+FORMAT: Return as a clean JSON object.
+{
+  "act_number": "number",
+  "equipment": {
+    "model": "model name",
+    "serial": "serial number",
+    "counters": {"bw": 0, "color": 0}
+  },
+  "work_items": [
+    {"description": "item description", "quantity": 1}
+  ],
+  "checkboxes": {
+    "inspection": boolean,
+    "installation": boolean,
+    "to1": boolean,
+    "to2": boolean,
+    "to3": boolean,
+    "repair": boolean,
+    "delivery": boolean
+  }
+}
+If JSON is not possible, extract text maintaining layout."""
             
             payload = {
                 "model": "llava:7b",
@@ -428,9 +444,9 @@ Extract text maintaining the original layout:"""
                 "images": [image_base64],
                 "stream": False,
                 "options": {
-                    "temperature": 0.1,
+                    "temperature": 0.05,
                     "num_predict": 4096,
-                    "seed": 42  # Для воспроизводимости
+                    "seed": 42
                 }
             }
             
@@ -516,6 +532,66 @@ CORRECTED TEXT (Russian, clean, structured):"""
         
         return text
     
+    def detect_signature_and_stamp_advanced(self, image_path: str) -> Dict[str, bool]:
+        """
+        Обнаружение подписи и печати на изображении.
+        Использует CV-методы для поиска контрастных и геометрических признаков.
+        """
+        try:
+            img = cv2.imread(image_path)
+            if img is None:
+                return {"has_signature": False, "has_stamp": False}
+            
+            height, width = img.shape[:2]
+            
+            # 1. Поиск печати (круги + цвет)
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            
+            # Диапазоны для красного и синего (типичные цвета печатей)
+            red_mask = cv2.bitwise_or(
+                cv2.inRange(hsv, np.array([0, 50, 50]), np.array([10, 255, 255])),
+                cv2.inRange(hsv, np.array([170, 50, 50]), np.array([180, 255, 255]))
+            )
+            blue_mask = cv2.inRange(hsv, np.array([100, 50, 50]), np.array([130, 255, 255]))
+            color_mask = cv2.bitwise_or(red_mask, blue_mask)
+            
+            # Морфологическая очистка
+            kernel = np.ones((5, 5), np.uint8)
+            color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel)
+            
+            # Поиск круглых контуров
+            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            has_stamp = False
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area > 1000:
+                    perimeter = cv2.arcLength(cnt, True)
+                    circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+                    if circularity > 0.5:
+                        has_stamp = True
+                        break
+            
+            # 2. Поиск подписи (нижняя треть, высокая плотность линий)
+            bottom_start = int(height * 0.7)
+            bottom_area = img[bottom_start:height, :]
+            gray_bottom = cv2.cvtColor(bottom_area, cv2.COLOR_BGR2GRAY)
+            
+            # Используем Canny для поиска краев (подписи обычно имеют много резких краев)
+            edges = cv2.Canny(gray_bottom, 50, 150)
+            edge_density = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
+            
+            # Эмпирический порог для плотности рукописного текста
+            has_signature = edge_density > 0.01
+            
+            return {
+                "has_signature": has_signature,
+                "has_stamp": has_stamp
+            }
+            
+        except Exception as e:
+            print(f"Ошибка в detect_signature_and_stamp_advanced: {e}")
+            return {"has_signature": False, "has_stamp": False}
+
     def process_document_enhanced(self, image_path: str, expected_claim_number: Optional[str] = None) -> Dict[str, Any]:
         """
         Улучшенная обработка документа
