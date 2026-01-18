@@ -23,12 +23,6 @@ We have replaced the previous two-stage pipeline (Tesseract OCR + LLaVA cleanup)
     - Updated initialization to use `qwen2.5-vl:7b` model.
 - `requirements.txt`:
     - Removed `pytesseract` dependency (logic removed, though package might remain for other tools if needed).
-- `Dockerfile`:
-    - Removed `tesseract-ocr` and related packages to minimize image size.
-- `docker-compose.yml`:
-    - Updated `OLLAMA_MODEL` to `qwen2.5-vl:7b`.
-- `entrypoint.sh`:
-    - Updated automatic model pulling mechanism to fetch `qwen2.5-vl:7b`.
 
 ### Deprecated Files
 - `mistral_processor.py`: Code is superseded by `qwen_processor.py`. Can be archived or deleted.
