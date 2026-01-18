@@ -36,7 +36,7 @@ services:
       - OLLAMA_HOST=ollama:11434
       - OLLAMA_URL=http://ollama:11434
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-your-secret-key-change-this}
-      - OLLAMA_MODEL=mistral:7b-instruct-v0.2-q4_K_M
+      - OLLAMA_MODEL=qwen2.5-vl:7b
     restart: unless-stopped
     networks:
       - ocr-network
