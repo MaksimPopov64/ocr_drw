@@ -29,6 +29,7 @@ RUN apt-get update && \
     supervisor \
     nginx \
     tesseract-ocr \
+    tesseract-ocr-rus \
     libtesseract-dev \
     libgl1 \
     libglib2.0-0t64 \

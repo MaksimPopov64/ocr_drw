@@ -1,5 +1,5 @@
 """
-Mistral OCR Processor для распознавания и анализа документов через Ollama
+Enhanced Mistral OCR Processor с улучшенной обработкой текста и детекцией
 """
 import os
 import json
@@ -8,509 +8,684 @@ import requests
 import cv2
 import numpy as np
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import re
+from dataclasses import dataclass
+from enum import Enum
 
-class MistralOCRProcessor:
-    def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "mistral:7b-instruct-v0.2-q4_K_M"):
+class DocumentType(Enum):
+    """Типы документов"""
+    SERVICE_ACT = "service_act"
+    INVOICE = "invoice"
+    CONTRACT = "contract"
+    UNKNOWN = "unknown"
+
+@dataclass
+class OCRConfig:
+    """Конфигурация OCR"""
+    use_tesseract_first: bool = True
+    use_llava_fallback: bool = True
+    preprocess_image: bool = True
+    clean_with_llm: bool = True
+    max_text_length: int = 5000
+    confidence_threshold: float = 0.7
+    
+class EnhancedMistralOCRProcessor:
+    def __init__(self, 
+                 ollama_url: str = "http://localhost:11434",
+                 model: str = "mistral:7b-instruct-v0.2-q4_K_M",
+                 config: Optional[OCRConfig] = None):
         """
-        Инициализация процессора для работы с Mistral через Ollama
-        
-        Args:
-            ollama_url: URL сервера Ollama
-            model: Название модели для использования
+        Инициализация улучшенного процессора
         """
         self.ollama_url = ollama_url
         self.model = model
-        self.vision_model = "llava:7b"  # Альтернатива с поддержкой изображений
+        self.vision_model = "llava:7b"
+        self.config = config or OCRConfig()
         
-        # Проверяем доступность Ollama
+        # Проверяем соединение
         self.check_ollama_connection()
         
-        # Шаблон для парсинга актов
-        self.document_template = {
-            "claim_number": None,
-            "equipment_model": None,
-            "cartridge_model": None,
-            "customer_name": None,
-            "work_type": None,
-            "signature_present": False,
-            "stamp_present": False,
-            "total_pages": None,
-            "service_date": None
+        # Словарь исправлений типичных ошибок OCR
+        self.ocr_corrections = {
+            # Русские слова
+            "ниоподписонся": "нижеподписавшиеся",
+            "впарить": "оборудование",
+            "выпопнил": "выполнил",
+            "BRT": "АКТ",
+            "прадетовителем": "представителем",
+            "Boiron": "Выполненные",
+            "Cyerarmum": "Сервисные",
+            "Эрве": "Замена",
+            
+            # Английские артефакты на русские
+            "doraron": "",
+            "aos yy eae": "",
+            "nia wa": "ООО",
+            "taore Vonwrera": "представитель Заказчика",
+            "tenner": "картридж",
+            
+            # Модели оборудования
+            "Ls ОМЗ ОЛА": "LaserJet M1132",
+        }
+        
+        # Паттерны для извлечения ключевой информации
+        self.extraction_patterns = {
+            "claim_number": [
+                r"заявк[еи]\s*№?\s*(\d+)",
+                r"№\s*(\d{6,})",
+                r"Номер заявки[:\s]+(\d+)"
+            ],
+            "equipment_model": [
+                r"(HP|Canon|Xerox|Brother|Samsung|Kyocera)[\s\w]+\d+",
+                r"модель[:\s]+([\w\s\d]+)",
+                r"принтер[:\s]+([\w\s\d]+)"
+            ],
+            "cartridge_model": [
+                r"(CE\d{3}[A-Z])",
+                r"(Q\d{4}[A-Z])",
+                r"картридж[:\s]+([\w\d]+)",
+                r"(TK-\d+)",
+                r"(MLT-\w\d+)"
+            ],
+            "customer_name": [
+                r"ООО\s+[\"«]([^\"»]+)[\"»]",
+                r"Заказчик[:\s]+([^\n]+)",
+                r"Организация[:\s]+([^\n]+)"
+            ]
         }
     
-    def check_ollama_connection(self):
-        """Проверка соединения с Ollama"""
-        try:
-            response = requests.get(f"{self.ollama_url}/api/tags")
-            if response.status_code == 200:
-                print(f"✅ Ollama доступен. Модели: {response.json()}")
-            else:
-                print(f"⚠️ Ollama ответил с кодом: {response.status_code}")
-        except Exception as e:
-            print(f"❌ Не удалось подключиться к Ollama: {e}")
-            print("Убедитесь, что Ollama запущен: ollama serve")
-    
-    def encode_image_to_base64(self, image_path: str) -> str:
+    def advanced_preprocess_image(self, image_path: str) -> str:
         """
-        Кодирование изображения в base64 для отправки в модель
-        """
-        with open(image_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-        return encoded_string
-    
-    def preprocess_image_for_ocr(self, image_path: str) -> str:
-        """
-        Предобработка изображения для улучшения читаемости
+        Продвинутая предобработка изображения для OCR
         """
         img = cv2.imread(image_path)
         if img is None:
             raise ValueError(f"Не удалось загрузить изображение: {image_path}")
         
-        # Улучшение контраста и четкости
+        # 1. Исправление перспективы (если документ сфотографирован под углом)
+        img = self.correct_perspective(img)
+        
+        # 2. Удаление шума
+        img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+        
+        # 3. Конвертация в grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Адаптивное пороговое преобразование
+        # 4. Адаптивная бинаризация (лучше для текста)
         binary = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
+            gray, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 
+            11, 2
         )
         
-        # Удаление шума
+        # 5. Морфологические операции для улучшения текста
         kernel = np.ones((1, 1), np.uint8)
-        processed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        
+        # 6. Увеличение резкости
+        kernel_sharp = np.array([[-1,-1,-1],
+                                 [-1, 9,-1],
+                                 [-1,-1,-1]])
+        sharp = cv2.filter2D(binary, -1, kernel_sharp)
         
         # Сохраняем обработанное изображение
-        temp_path = f"temp_processed_{os.path.basename(image_path)}"
-        cv2.imwrite(temp_path, processed)
+        temp_path = f"temp_enhanced_{os.path.basename(image_path)}"
+        cv2.imwrite(temp_path, sharp)
         
         return temp_path
     
-    def extract_text_with_mistral(self, image_path: str) -> str:
+    def correct_perspective(self, img: np.ndarray) -> np.ndarray:
         """
-        Извлечение текста с изображения с помощью llava (vision model)
-        Если модель не доступна, использует Tesseract как fallback
+        Коррекция перспективы документа
         """
         try:
-            # Кодируем изображение в base64
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            
+            # Находим контуры
+            contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+            
+            for contour in contours:
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                
+                if len(approx) == 4:
+                    # Нашли четырехугольник - возможно документ
+                    pts = approx.reshape(4, 2)
+                    rect = self.order_points(pts)
+                    
+                    # Применяем преобразование перспективы
+                    dst = self.four_point_transform(img, rect)
+                    return dst
+            
+            return img  # Если не нашли документ, возвращаем оригинал
+            
+        except Exception as e:
+            print(f"Не удалось скорректировать перспективу: {e}")
+            return img
+    
+    def order_points(self, pts):
+        """Упорядочивание точек для преобразования перспективы"""
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        return rect
+    
+    def four_point_transform(self, image, pts):
+        """Преобразование перспективы по 4 точкам"""
+        rect = self.order_points(pts)
+        (tl, tr, br, bl) = rect
+        
+        widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+        widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+        maxWidth = max(int(widthA), int(widthB))
+        
+        heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+        heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+        maxHeight = max(int(heightA), int(heightB))
+        
+        dst = np.array([
+            [0, 0],
+            [maxWidth - 1, 0],
+            [maxWidth - 1, maxHeight - 1],
+            [0, maxHeight - 1]], dtype="float32")
+        
+        M = cv2.getPerspectiveTransform(rect, dst)
+        warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+        
+        return warped
+    
+    def enhanced_tesseract_ocr(self, image_path: str) -> Tuple[str, float]:
+        """
+        Улучшенный Tesseract OCR с confidence score
+        """
+        try:
+            import pytesseract
+            from PIL import Image
+            
+            img = Image.open(image_path)
+            
+            # Используем разные режимы PSM для лучшего результата
+            psm_modes = [3, 6, 11, 4]  # Разные режимы сегментации
+            best_text = ""
+            best_confidence = 0
+            
+            for psm in psm_modes:
+                try:
+                    # Получаем данные с confidence
+                    custom_config = f'--psm {psm} --oem 3'
+                    data = pytesseract.image_to_data(
+                        img, 
+                        lang='rus+eng',
+                        config=custom_config,
+                        output_type=pytesseract.Output.DICT
+                    )
+                    
+                    # Собираем текст и считаем среднюю уверенность
+                    words = []
+                    confidences = []
+                    
+                    for i in range(len(data['text'])):
+                        if int(data['conf'][i]) > 0:  # Игнорируем слова без уверенности
+                            word = data['text'][i].strip()
+                            if word:
+                                words.append(word)
+                                confidences.append(int(data['conf'][i]))
+                    
+                    text = ' '.join(words)
+                    avg_confidence = np.mean(confidences) if confidences else 0
+                    
+                    if avg_confidence > best_confidence:
+                        best_text = text
+                        best_confidence = avg_confidence
+                        
+                except Exception:
+                    continue
+            
+            print(f"✓ Tesseract: {len(best_text)} символов, уверенность: {best_confidence:.1f}%")
+            return best_text, best_confidence / 100
+            
+        except Exception as e:
+            print(f"❌ Ошибка Tesseract: {e}")
+            return "", 0.0
+    
+    def smart_text_cleaning(self, text: str) -> str:
+        """
+        Умная очистка текста с использованием словаря и паттернов
+        """
+        if not text:
+            return text
+        
+        # 1. Применяем словарь исправлений
+        for wrong, correct in self.ocr_corrections.items():
+            text = text.replace(wrong, correct)
+        
+        # 2. Удаляем строки, состоящие только из мусора
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                cleaned_lines.append('')
+                continue
+            
+            # Проверяем соотношение букв к общему количеству символов
+            if len(line) > 3:
+                letter_count = sum(1 for c in line if c.isalpha())
+                ratio = letter_count / len(line)
+                
+                # Если менее 30% букв - вероятно мусор
+                if ratio < 0.3:
+                    continue
+            
+            # Проверяем на известные паттерны мусора
+            garbage_patterns = [
+                r'^[a-z]{2,4}\s+[a-z]{2,4}\s+[a-z]{2,4}$',  # Короткие англ слова
+                r'^[\W_]+$',  # Только спецсимволы
+                r'^[a-z\s]+$' if len(line) < 10 else None,  # Короткие англ строки
+            ]
+            
+            is_garbage = False
+            for pattern in garbage_patterns:
+                if pattern and re.match(pattern, line.lower()):
+                    is_garbage = True
+                    break
+            
+            if not is_garbage:
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
+    
+    def extract_key_information(self, text: str) -> Dict[str, Any]:
+        """
+        Извлечение ключевой информации с использованием паттернов
+        """
+        result = {
+            "claim_number": None,
+            "equipment_model": None,
+            "cartridge_model": None,
+            "customer_name": None,
+            "work_type": None,
+            "service_date": None
+        }
+        
+        # Извлекаем по паттернам
+        for field, patterns in self.extraction_patterns.items():
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    result[field] = match.group(1).strip()
+                    break
+        
+        # Определяем тип работ
+        work_types = {
+            "Замена картриджа": ["замен", "картридж"],
+            "Техническое обслуживание": ["ТО", "обслуживание", "профилактика"],
+            "Ремонт": ["ремонт", "починка", "восстановление"],
+            "Диагностика": ["диагностика", "осмотр", "проверка"]
+        }
+        
+        text_lower = text.lower()
+        for work_type, keywords in work_types.items():
+            if any(keyword in text_lower for keyword in keywords):
+                result["work_type"] = work_type
+                break
+        
+        # Извлекаем дату
+        date_patterns = [
+            r'(\d{1,2}[./]\d{1,2}[./]\d{2,4})',
+            r'(\d{1,2}\s+\w+\s+\d{4})',
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, text)
+            if match:
+                result["service_date"] = match.group(1)
+                break
+        
+        return result
+    
+    def hybrid_ocr_strategy(self, image_path: str) -> str:
+        """
+        Гибридная стратегия OCR: комбинирует несколько методов
+        """
+        results = []
+        
+        # 1. Tesseract на оригинальном изображении
+        if self.config.use_tesseract_first:
+            text, confidence = self.enhanced_tesseract_ocr(image_path)
+            if text and confidence > self.config.confidence_threshold:
+                results.append((text, confidence, "tesseract_original"))
+        
+        # 2. Tesseract на предобработанном изображении
+        if self.config.preprocess_image:
+            try:
+                processed_path = self.advanced_preprocess_image(image_path)
+                text, confidence = self.enhanced_tesseract_ocr(processed_path)
+                if text and confidence > self.config.confidence_threshold:
+                    results.append((text, confidence, "tesseract_processed"))
+                os.remove(processed_path)
+            except Exception as e:
+                print(f"Ошибка предобработки: {e}")
+        
+        # 3. LLaVA для сложных случаев
+        if self.config.use_llava_fallback and (not results or max(r[1] for r in results) < 0.5):
+            try:
+                llava_text = self.extract_text_with_llava_enhanced(image_path)
+                if llava_text:
+                    results.append((llava_text, 0.6, "llava"))  # Фиксированная confidence для LLaVA
+            except Exception as e:
+                print(f"Ошибка LLaVA: {e}")
+        
+        # Выбираем лучший результат
+        if results:
+            best_result = max(results, key=lambda x: (x[1], len(x[0])))
+            print(f"📊 Выбран метод: {best_result[2]} (confidence: {best_result[1]:.2f})")
+            return best_result[0]
+        
+        return ""
+    
+    def extract_text_with_llava_enhanced(self, image_path: str) -> str:
+        """
+        Улучшенная версия извлечения текста через LLaVA
+        """
+        try:
             image_base64 = self.encode_image_to_base64(image_path)
             
-            # Подготавливаем промпт для OCR
-            prompt = """Ты - система оптического распознавания текста (OCR). 
-Проанализируй это изображение документа и извлеки весь видимый текст максимально точно.
-Сохрани структуру текста, включая макеты таблиц если они есть.
-Верни только распознанный текст и цифры, без комментариев.
-Если видишь подпись или штамп, отмечай это как [SIGNATURE] или [STAMP]."""
+            # Специализированный промпт для русских документов
+            prompt = """You are an advanced OCR system specialized in Russian business documents.
             
-            # Используем vision-capable модель (llava) для обработки изображений
-            vision_model = "llava:7b"
-            
-            # Формируем запрос к Ollama API
-            payload = {
-                "model": vision_model,
-                "prompt": prompt,
-                "images": [image_base64],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Низкая температура для точности
-                    "num_predict": 4096
-                }
-            }
-            
-            # Отправляем запрос
-            try:
-                response = requests.post(
-                    f"{self.ollama_url}/api/generate",
-                    json=payload,
-                    timeout=300  # Увеличиваем таймаут для больших документов
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    text = result.get("response", "").strip()
-                    if text:
-                        return text
-                    else:
-                        print(f"⚠️ Ollama вернул пустой ответ, используем Tesseract")
-                        return self.extract_text_with_tesseract(image_path)
-                else:
-                    print(f"⚠️ Ошибка Ollama {response.status_code}: {response.text[:200]}")
-                    return self.extract_text_with_tesseract(image_path)
-                    
-            except requests.exceptions.Timeout:
-                print(f"⚠️ Timeout при запросе к Ollama, используем Tesseract")
-                return self.extract_text_with_tesseract(image_path)
-            except requests.exceptions.ConnectionError:
-                print(f"⚠️ Ollama не доступна, используем Tesseract")
-                return self.extract_text_with_tesseract(image_path)
-                
-        except Exception as e:
-            print(f"❌ Ошибка при извлечении текста: {e}")
-            # Fallback на Tesseract
-            try:
-                return self.extract_text_with_tesseract(image_path)
-            except:
-                return ""
-    
-    def analyze_document_structure(self, text: str) -> Dict[str, Any]:
-        """
-        Анализ структуры документа с помощью Mistral
-        """
-        try:
-            # Промпт для анализа акта выполненных работ
-            prompt = f"""Ты анализируешь документ "Акт выполненных работ". 
-            Извлеки следующую информацию в формате JSON:
-            
-            1. Номер заявки (цифры)
-            2. Модель оборудования (например, HP, Canon, Xerox)
-            3. Модель картриджа (например, CE285A, Q2612A)
-            4. Наименование заказчика/клиента
-            5. Тип выполненных работ (Осмотр, ТО1, ТО2, ТО3, Ремонт, Замена картриджа)
-            6. Наличие подписи клиента (да/нет)
-            7. Наличие печати/штампа (да/нет)
-            8. Количество отпечатанных страниц (цифра)
-            9. Дата выполнения работ
-            
-            Текст документа:
-            {text[:3000]}  # Ограничиваем длину для промпта
-            
-            Верни ТОЛЬКО JSON в формате:
-            {{
-                "claim_number": "значение или null",
-                "equipment_model": "значение или null",
-                "cartridge_model": "значение или null",
-                "customer_name": "значение или null",
-                "work_type": "значение или null",
-                "signature_present": true/false,
-                "stamp_present": true/false,
-                "total_pages": число или null,
-                "service_date": "дата или null"
-            }}
-            
-            Не добавляй пояснений, только JSON."""
-            
-            payload = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 2048
-                }
-            }
-            
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json=payload,
-                timeout=180
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                response_text = result.get("response", "")
-                
-                # Извлекаем JSON из ответа
-                try:
-                    # Ищем JSON в ответе (модель может добавить текст до/после JSON)
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(0)
-                        parsed_data = json.loads(json_str)
-                        return parsed_data
-                    else:
-                        print(f"Не найден JSON в ответе: {response_text}")
-                        return self.document_template
-                except json.JSONDecodeError as e:
-                    print(f"Ошибка парсинга JSON: {e}")
-                    print(f"Ответ модели: {response_text}")
-                    return self.document_template
-            else:
-                print(f"Ошибка API при анализе: {response.status_code}")
-                return self.document_template
-                
-        except Exception as e:
-            print(f"Ошибка анализа документа: {e}")
-            return self.document_template
-    
-    def detect_signature_and_stamp(self, image_path: str) -> Dict[str, bool]:
-        """
-        Детекция подписи и печати на изображении
-        """
-        try:
-            img = cv2.imread(image_path)
-            if img is None:
-                return {"has_signature": False, "has_stamp": False}
-            
-            height, width = img.shape[:2]
-            
-            # Анализ нижней части документа (где обычно подпись и печать)
-            bottom_section = img[int(height*0.7):height, 0:width]
-            
-            # Кодируем секцию в base64
-            temp_path = "temp_bottom_section.jpg"
-            cv2.imwrite(temp_path, bottom_section)
-            image_base64 = self.encode_image_to_base64(temp_path)
-            
-            # Промпт для анализа подписи и печати
-            prompt = """Проанализируй это изображение - это нижняя часть офисного документа.
-Определи наличие:
-1. Рукописной подписи (любые рукописные буквы/линии)
-2. Печати или штампа (обычно красного или синего цвета, может быть круглая или квадратная)
+TASK: Extract ALL visible text from this service act document (АКТ выполненных работ).
 
-Верни ТОЛЬКО JSON:
-{
-    "has_signature": true/false,
-    "has_stamp": true/false,
-    "signature_desc": "описание подписи если найдена",
-    "stamp_desc": "описание штампа если найден"
-}"""
+IMPORTANT:
+1. This is a Russian document - prioritize Cyrillic text
+2. Common fields include:
+   - АКТ по заявке № (Act by request №)
+   - Исполнитель (Contractor)
+   - Заказчик (Customer)
+   - Модель оборудования (Equipment model)
+   - Выполненные работы (Completed work)
+   
+3. If you see garbled text, try to reconstruct the intended Russian words
+4. Preserve document structure and formatting
+5. Mark signatures as [ПОДПИСЬ/SIGNATURE]
+6. Mark stamps as [ПЕЧАТЬ/STAMP]
+
+Extract text maintaining the original layout:"""
             
             payload = {
                 "model": "llava:7b",
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
-                "options": {"temperature": 0.1}
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 4096,
+                    "seed": 42  # Для воспроизводимости
+                }
             }
             
             response = requests.post(
-                f"{self.ollama_url}/api/generate", 
+                f"{self.ollama_url}/api/generate",
                 json=payload,
-                timeout=60
+                timeout=300
             )
             
             if response.status_code == 200:
                 result = response.json()
-                response_text = result.get("response", "")
-                
-                # Парсим ответ
-                try:
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        parsed = json.loads(json_match.group(0))
-                        return {
-                            "has_signature": parsed.get("has_signature", False),
-                            "has_stamp": parsed.get("has_stamp", False)
-                        }
-                except Exception as parse_error:
-                    print(f"Не удалось распарсить ответ модели: {parse_error}")
-            
-            # Если модель не сработала, используем компьютерное зрение
-            print("⚠️ Fallback на компьютерное зрение для детекции подписи/печати")
-            return self.cv_detect_signature_stamp(img)
+                return result.get("response", "").strip()
             
         except Exception as e:
-            print(f"Ошибка детекции подписи/печати: {e}")
-            return {"has_signature": False, "has_stamp": False}
-        finally:
-            # Удаляем временный файл
-            if os.path.exists("temp_bottom_section.jpg"):
-                os.remove("temp_bottom_section.jpg")
+            print(f"Ошибка LLaVA: {e}")
+        
+        return ""
     
-    def cv_detect_signature_stamp(self, img: np.ndarray) -> Dict[str, bool]:
+    def advanced_llm_cleaning(self, text: str) -> str:
         """
-        Детекция подписи и печати с помощью компьютерного зрения
+        Продвинутая очистка текста с помощью LLM
         """
-        result = {"has_signature": False, "has_stamp": False}
+        if not text or len(text.strip()) < 10:
+            return text
+        
+        # Сначала применяем быструю очистку
+        text = self.smart_text_cleaning(text)
+        
+        if not self.config.clean_with_llm:
+            return text
         
         try:
-            # Преобразуем в HSV для цветовой сегментации
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            # Ограничиваем размер для LLM
+            text_chunk = text[:2000] if len(text) > 2000 else text
             
-            # Поиск красного цвета (печати)
-            lower_red1 = np.array([0, 70, 50])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([170, 70, 50])
-            upper_red2 = np.array([180, 255, 255])
+            prompt = f"""You are a Russian document text correction expert.
+
+INPUT: OCR text from a Russian service document with recognition errors.
+
+YOUR TASK:
+1. Fix OCR errors in Russian words
+2. Remove garbage text that doesn't make sense
+3. Reconstruct damaged Russian words
+4. Keep all numbers, dates, and model names intact
+5. Preserve document structure
+
+COMMON CORRECTIONS:
+- "ниоподписонся" → "нижеподписавшиеся"
+- "выпопнил" → "выполнил"
+- "BRT" → "АКТ"
+- Random English letters between Russian words should be removed
+
+CORRUPTED TEXT:
+{text_chunk}
+
+CORRECTED TEXT (Russian, clean, structured):"""
             
-            mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            red_mask = cv2.bitwise_or(mask_red1, mask_red2)
-            
-            # Поиск кругов (печати обычно круглые)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            circles = cv2.HoughCircles(
-                gray, cv2.HOUGH_GRADIENT, dp=1.2, 
-                minDist=50, param1=50, param2=30, 
-                minRadius=20, maxRadius=100
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "num_predict": 2048
+                    }
+                },
+                timeout=60
             )
             
-            result["has_stamp"] = (np.sum(red_mask) > 10000) or (circles is not None)
-            
-            # Поиск подписи (контуры с высокой детализацией)
-            edges = cv2.Canny(gray, 50, 150)
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            signature_contours = []
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if 100 < area < 5000:  # Подпись среднего размера
-                    perimeter = cv2.arcLength(cnt, True)
-                    if perimeter > 0:
-                        circularity = 4 * np.pi * area / (perimeter * perimeter)
-                        if circularity < 0.5:  # Не круглый объект
-                            signature_contours.append(cnt)
-            
-            result["has_signature"] = len(signature_contours) > 2
-            
-            return result
+            if response.status_code == 200:
+                cleaned = response.json().get("response", text).strip()
+                if cleaned and len(cleaned) > len(text) * 0.3:  # Проверка что не удалили слишком много
+                    # Объединяем с остальной частью если текст был обрезан
+                    if len(text) > 2000:
+                        return cleaned + text[2000:]
+                    return cleaned
             
         except Exception as e:
-            print(f"Ошибка CV детекции: {e}")
-            return result
+            print(f"Ошибка LLM очистки: {e}")
+        
+        return text
     
-    def check_model_exists(self, model_name: str) -> bool:
-        """Проверка доступности модели"""
-        try:
-            response = requests.get(f"{self.ollama_url}/api/tags")
-            models = [m["name"] for m in response.json().get("models", [])]
-            return any(model_name in m for m in models)
-        except:
-            return False
-    
-    def process_document(self, image_path: str, expected_claim_number: Optional[str] = None) -> Dict[str, Any]:
+    def process_document_enhanced(self, image_path: str, expected_claim_number: Optional[str] = None) -> Dict[str, Any]:
         """
-        Полная обработка документа
+        Улучшенная обработка документа
         """
         start_time = datetime.now()
-        
-        print(f"🔍 Начинаем обработку документа: {image_path}")
+        print(f"🔍 Обработка документа: {image_path}")
         
         try:
-            # 1. Предобработка изображения
-            print("📝 Предобработка изображения...")
-            processed_path = self.preprocess_image_for_ocr(image_path)
+            # 1. Гибридное извлечение текста
+            print("📖 Извлечение текста (гибридная стратегия)...")
+            extracted_text = self.hybrid_ocr_strategy(image_path)
             
-            # 2. Извлечение текста
-            print("🔤 Извлечение текста с помощью Mistral...")
-            extracted_text = self.extract_text_with_mistral(processed_path)
+            if not extracted_text:
+                raise ValueError("Не удалось извлечь текст из документа")
             
-            # Если Mistral не сработал, пробуем Tesseract как fallback
-            if not extracted_text or len(extracted_text.strip()) < 10:
-                print("⚠️ Mistral не извлек текст, используем Tesseract...")
-                extracted_text = self.extract_text_with_tesseract(processed_path)
+            print(f"📊 Извлечено {len(extracted_text)} символов")
             
-            print(f"📊 Извлечено символов: {len(extracted_text)}")
+            # 2. Продвинутая очистка
+            print("🧹 Очистка текста...")
+            cleaned_text = self.advanced_llm_cleaning(extracted_text)
+            print(f"📊 После очистки: {len(cleaned_text)} символов")
             
-            # 3. Анализ структуры документа
-            print("🧠 Анализ структуры документа...")
-            parsed_data = self.analyze_document_structure(extracted_text)
+            # 3. Извлечение ключевой информации
+            print("🔑 Извлечение ключевой информации...")
+            key_info = self.extract_key_information(cleaned_text)
             
             # 4. Детекция подписи и печати
-            print("🖋️ Детекция подписи и печати...")
-            signature_stamp = self.detect_signature_and_stamp(image_path)
+            print("🖋️ Поиск подписи и печати...")
+            signature_stamp = self.detect_signature_and_stamp_advanced(image_path)
             
             # 5. Проверка требований
             print("✅ Проверка требований...")
-            check_result = self.check_requirements(
-                parsed_data, 
+            check_result = self.check_requirements_enhanced(
+                key_info, 
                 signature_stamp, 
                 expected_claim_number
             )
             
-            # 6. Формирование результата
+            # 6. Определение типа документа
+            doc_type = self.detect_document_type(cleaned_text)
+            
+            processing_time = (datetime.now() - start_time).total_seconds()
+            
             result = {
+                "success": True,
                 "timestamp": datetime.now().isoformat(),
                 "filename": os.path.basename(image_path),
-                "processing_time_seconds": (datetime.now() - start_time).total_seconds(),
-                "parsed_data": {
-                    **parsed_data,
-                    "signature_status": "FOUND" if signature_stamp.get("has_signature") else "NOT_FOUND",
-                    "stamp_status": "FOUND" if signature_stamp.get("has_stamp") else "NOT_FOUND",
-                    "full_text": extracted_text[:5000]  # Ограничиваем для вывода
+                "processing_time_seconds": processing_time,
+                "document_type": doc_type.value,
+                "extracted_data": {
+                    **key_info,
+                    "has_signature": signature_stamp.get("has_signature", False),
+                    "has_stamp": signature_stamp.get("has_stamp", False),
+                    "text_preview": cleaned_text[:500] + "..." if len(cleaned_text) > 500 else cleaned_text
                 },
-                "check_result": check_result,
-                "ocr_engine": "Mistral/Ollama",
-                "model_used": self.model,
-                "success": True
+                "validation": check_result,
+                "full_text": cleaned_text,
+                "metadata": {
+                    "ocr_engine": "Hybrid (Tesseract + LLaVA)",
+                    "llm_model": self.model,
+                    "preprocessing_applied": self.config.preprocess_image,
+                    "llm_cleaning_applied": self.config.clean_with_llm
+                }
             }
             
-            result["status"] = check_result.get("status", "UNKNOWN")
-            
-            print(f"✅ Обработка завершена за {result['processing_time_seconds']:.2f} сек")
+            print(f"✅ Обработка завершена за {processing_time:.2f} сек")
+            print(f"📋 Тип документа: {doc_type.value}")
+            print(f"📝 Номер заявки: {key_info.get('claim_number', 'Не найден')}")
             
             return result
             
         except Exception as e:
             print(f"❌ Ошибка обработки: {e}")
             return {
-                "error": f"Ошибка обработки документа: {str(e)}",
-                "status": "ERROR",
+                "success": False,
+                "error": str(e),
                 "timestamp": datetime.now().isoformat(),
-                "success": False
+                "filename": os.path.basename(image_path)
             }
-        finally:
-            # Удаляем временные файлы
-            if 'processed_path' in locals() and os.path.exists(processed_path):
-                os.remove(processed_path)
     
-    def extract_text_with_tesseract(self, image_path: str) -> str:
-        """Fallback метод с Tesseract"""
-        try:
-            import pytesseract
-            img = cv2.imread(image_path)
-            text = pytesseract.image_to_string(img, lang='rus+eng')
-            return text
-        except ImportError:
-            return "Tesseract не установлен"
-        except Exception as e:
-            print(f"Ошибка Tesseract: {e}")
-            return ""
+    def detect_document_type(self, text: str) -> DocumentType:
+        """
+        Определение типа документа
+        """
+        text_lower = text.lower()
+        
+        if "акт" in text_lower and "заявк" in text_lower:
+            return DocumentType.SERVICE_ACT
+        elif "счет" in text_lower or "invoice" in text_lower:
+            return DocumentType.INVOICE
+        elif "договор" in text_lower or "contract" in text_lower:
+            return DocumentType.CONTRACT
+        else:
+            return DocumentType.UNKNOWN
     
-    def check_requirements(self, parsed_data: Dict, signature_stamp: Dict, expected_claim: Optional[str]) -> Dict:
-        """Проверка требований к документу"""
+    def check_requirements_enhanced(self, 
+                                   key_info: Dict, 
+                                   signature_stamp: Dict,
+                                   expected_claim: Optional[str]) -> Dict:
+        """
+        Улучшенная проверка требований
+        """
         issues = []
         warnings = []
+        suggestions = []
         
-        # 1. Проверка номера заявки
-        claim_number = parsed_data.get("claim_number")
-        if expected_claim and claim_number:
-            if str(claim_number) != str(expected_claim):
-                issues.append({
-                    "code": "CLAIM_MISMATCH",
-                    "message": f"Номер заявки не совпадает. Ожидалось: {expected_claim}, найдено: {claim_number}",
-                    "severity": "ERROR"
+        # Проверка номера заявки
+        if expected_claim:
+            claim = key_info.get("claim_number")
+            if claim:
+                if str(claim) != str(expected_claim):
+                    issues.append({
+                        "field": "claim_number",
+                        "issue": "mismatch",
+                        "expected": expected_claim,
+                        "found": claim,
+                        "severity": "high"
+                    })
+            else:
+                warnings.append({
+                    "field": "claim_number",
+                    "issue": "not_found",
+                    "severity": "medium"
                 })
         
-        if not claim_number:
-            warnings.append({
-                "code": "CLAIM_NOT_FOUND",
-                "message": "Номер заявки не найден в документе",
-                "severity": "WARNING"
-            })
+        # Проверка обязательных полей
+        required_fields = {
+            "equipment_model": "Модель оборудования",
+            "customer_name": "Название заказчика",
+            "work_type": "Тип выполненных работ"
+        }
         
-        # 2. Проверка модели оборудования
-        if not parsed_data.get("equipment_model"):
-            issues.append({
-                "code": "MODEL_NOT_FOUND",
-                "message": "Модель оборудования не найдена",
-                "severity": "ERROR"
-            })
+        for field, description in required_fields.items():
+            if not key_info.get(field):
+                warnings.append({
+                    "field": field,
+                    "issue": "missing",
+                    "description": f"{description} не найдено",
+                    "severity": "medium"
+                })
         
-        # 3. Проверка подписи
+        # Проверка подписи и печати
         if not signature_stamp.get("has_signature"):
             issues.append({
-                "code": "SIGNATURE_NOT_FOUND",
-                "message": "Подпись клиента не обнаружена",
-                "severity": "ERROR"
+                "field": "signature",
+                "issue": "missing",
+                "description": "Подпись не обнаружена",
+                "severity": "high"
             })
         
-        # 4. Проверка печати
         if not signature_stamp.get("has_stamp"):
             warnings.append({
-                "code": "STAMP_NOT_FOUND",
-                "message": "Печать клиента не обнаружена",
-                "severity": "WARNING"
+                "field": "stamp",
+                "issue": "missing",
+                "description": "Печать не обнаружена",
+                "severity": "low"
             })
         
-        # Определение статуса
-        has_errors = any(i.get("severity") == "ERROR" for i in issues)
-        has_warnings = any(w.get("severity") == "WARNING" for w in warnings)
+        # Формирование рекомендаций
+        if issues:
+            suggestions.append("Документ требует доработки перед закрытием заявки")
+        elif warnings:
+            suggestions.append("Рекомендуется ручная проверка документа")
+        else:
+            suggestions.append("Документ готов к обработке")
         
-        if has_errors:
+        # Определение статуса
+        if any(i["severity"] == "high" for i in issues):
             status = "REJECTED"
-        elif has_warnings:
+        elif warnings:
             status = "NEEDS_REVIEW"
         else:
             status = "APPROVED"
@@ -519,17 +694,38 @@ class MistralOCRProcessor:
             "status": status,
             "issues": issues,
             "warnings": warnings,
-            "decision": {
-                "action": "CLOSE_CLAIM" if status == "APPROVED" else 
-                         "REVIEW_REQUIRED" if status == "NEEDS_REVIEW" else 
-                         "RETURN_FOR_CORRECTION",
-                "message": "Все проверки пройдены" if status == "APPROVED" else
-                          "Требуется ручная проверка" if status == "NEEDS_REVIEW" else
-                          "Документ не прошел проверку",
-                "steps": [
-                    f"Внести номенклатуру: {parsed_data.get('cartridge_model', 'N/A')}",
-                    f"Внести количество: 1",
-                    "Перевести заявку в статус 'ЗАКРЫТО'"
-                ] if status == "APPROVED" else ["Передать документ на ручную проверку"]
-            }
+            "suggestions": suggestions,
+            "can_process": status == "APPROVED",
+            "requires_manual_review": status == "NEEDS_REVIEW"
         }
+
+# Пример использования
+if __name__ == "__main__":
+    # Создаем процессор с оптимальными настройками
+    config = OCRConfig(
+        use_tesseract_first=True,
+        use_llava_fallback=True,
+        preprocess_image=True,
+        clean_with_llm=True,
+        confidence_threshold=0.5
+    )
+    
+    processor = EnhancedMistralOCRProcessor(config=config)
+    
+    # Обрабатываем документ
+    result = processor.process_document_enhanced(
+        "path/to/your/document.jpg",
+        expected_claim_number="1847896"
+    )
+    
+    # Выводим результат
+    if result["success"]:
+        print("\n📄 РЕЗУЛЬТАТ ОБРАБОТКИ:")
+        print(f"Тип документа: {result['document_type']}")
+        print(f"Статус валидации: {result['validation']['status']}")
+        print(f"\nИзвлеченные данные:")
+        for key, value in result['extracted_data'].items():
+            if value and key != 'text_preview':
+                print(f"  • {key}: {value}")
+    else:
+        print(f"\n❌ Ошибка: {result['error']}")
