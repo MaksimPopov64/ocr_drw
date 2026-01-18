@@ -9,7 +9,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
 import cv2
 import numpy as np
-from mistral_processor import MistralOCRProcessor
+from mistral_processor import EnhancedMistralOCRProcessor as MistralOCRProcessor
 import uuid
 
 # Настройка логирования
